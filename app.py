@@ -15,7 +15,7 @@ import streamlit as st
 # - Generates Excel report and provides download button
 # =========================================================
 
-APP_TITLE = "Data_Audit_Tool"
+APP_TITLE = "Onboarding ADP Data tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
