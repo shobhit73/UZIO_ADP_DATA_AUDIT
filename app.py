@@ -7,13 +7,32 @@ import pandas as pd
 import streamlit as st
 
 # =========================================================
-# Data_Audit_Tool (Streamlit)
+# Onboarding ADP data tool (Streamlit)
 # - No previews (no tables shown)
 # - No sidebar / left panel inputs
-# - User uploads .xlsx -> clicks Run -> gets download link/button for report
+# - User uploads .xlsx -> clicks Run -> gets download button for report
+#
+# OUTPUT TABS:
+#   - Summary
+#   - Field_Summary_By_Status
+#   - Mapping_ADP_Col_Missing
+#   - Comparison_Detail_AllFields
+#   - Mismatches_Only
+#
+# Fixes/Rules included:
+# 1) ZIPCODE normalization compares first 5 digits
+# 2) Gender normalization: ADP "Man/Male"->male, "Woman/Female"->female
+# 3) Employment Status: ADP retired/terminated => UZIO terminated OK; UZIO active => mismatch
+# 4) Termination Reason: UZIO "Other" + ADP reason in allowed list => OK
+# 5) PayType exceptions:
+#    - HOURLY employee: missing Annual Salary in UZIO => OK
+#    - SALARIED employee: missing Hourly Pay Rate in UZIO => OK
+# 6) Pay Type equivalence: UZIO "Salary" == ADP "Salaried" => OK
+# 7) If mapped UZIO field for Employment Status / Pay Type is blank due to mapping label mismatch
+#    (e.g., mapping uses "Status"), fallback to the discovered UZIO columns for those values.
 # =========================================================
 
-APP_TITLE = "Data_Audit_Tool"
+APP_TITLE = "Onboarding ADP data tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 # Fixed sheet names (as per your workbook)
@@ -93,11 +112,32 @@ def norm_gender(x):
         return "male"
     return s
 
+def is_pay_type_field(field_name: str) -> bool:
+    f = norm_colname(field_name).casefold()
+    return "pay type" in f or f == "paytype" or f == "pay type"
+
+def norm_paytype_compare(x) -> str:
+    x = norm_blank(x)
+    if x == "":
+        return ""
+    s = str(x).replace("\u00A0", " ")
+    s = re.sub(r"\s+", " ", s).strip().casefold()
+    # Treat salary == salaried, hour == hourly
+    if "hour" in s:
+        return "hourly"
+    if "salary" in s or "salaried" in s:
+        return "salaried"
+    return s
+
 def norm_value(x, field_name: str):
     f = norm_colname(field_name).lower()
     x = norm_blank(x)
     if x == "":
         return ""
+
+    # Pay type equivalence normalization
+    if is_pay_type_field(field_name):
+        return norm_paytype_compare(x)
 
     if any(k in f for k in GENDER_KEYWORDS):
         return norm_gender(x)
@@ -137,7 +177,16 @@ def is_termination_reason_field(field_name: str) -> bool:
     return "termination reason" in norm_colname(field_name).casefold()
 
 def is_employment_status_field(field_name: str) -> bool:
-    return "employment status" in norm_colname(field_name).casefold()
+    # Your mapping might use "Status" (UZIO) to map employment status. Treat it as employment status.
+    f = norm_colname(field_name).casefold()
+    if "employment status" in f:
+        return True
+    if f == "status":
+        return True
+    # avoid false positives like "position status" if present:
+    if ("status" in f) and ("position" not in f) and ("pay" not in f):
+        return True
+    return False
 
 def status_contains_any(s: str, needles) -> bool:
     s = ("" if s is None else str(s)).casefold()
@@ -175,12 +224,8 @@ def normalize_reason_text(x) -> str:
     return s.casefold()
 
 def normalize_paytype_text(x) -> str:
-    s = norm_blank(x)
-    if s == "":
-        return ""
-    s = str(s).replace("\u00A0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s.casefold()
+    # used only for bucketing (hourly vs salaried)
+    return norm_paytype_compare(x)
 
 def paytype_bucket(paytype_norm: str) -> str:
     s = ("" if paytype_norm is None else str(paytype_norm)).casefold()
@@ -246,7 +291,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
     mapping_missing_adp_col = mapping_valid[~mapping_valid["ADP Coloumn"].isin(adp.columns)].copy()
 
-    # Employment Status column (UZIO)
+    # ---- Discover UZIO Employment Status column (actual)
     uzio_employment_status_col = None
     for c in uzio.columns:
         if norm_colname(c).casefold() == "employment status":
@@ -267,7 +312,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
             return "" if norm_blank(v) == "" else str(v)
         return ""
 
-    # Pay Type mapping (prefer ADP)
+    # ---- Pay Type mapping (prefer ADP)
     paytype_row = mapping_valid[mapping_valid["Uzio Coloumn"].str.contains(r"\bpay\s*type\b", case=False, na=False)]
     UZIO_PAYTYPE_COL = paytype_row.iloc[0]["Uzio Coloumn"] if len(paytype_row) else None
     ADP_PAYTYPE_COL  = paytype_row.iloc[0]["ADP Coloumn"]  if len(paytype_row) else None
@@ -288,8 +333,9 @@ def run_comparison(file_bytes: bytes) -> bytes:
         uz_exists = emp_id in uzio_idx.index
         adp_exists = emp_id in adp_idx.index
 
-        uz_emp_status = get_uzio_employment_status(emp_id)
-        emp_paytype = get_employee_pay_type(emp_id, adp_exists=adp_exists, uz_exists=uz_exists)
+        # These two should ALWAYS be populated in the report columns if present in UZIO/ADP
+        uz_emp_status = get_uzio_employment_status(emp_id)  # from actual UZIO "Employment Status" column
+        emp_paytype = get_employee_pay_type(emp_id, adp_exists=adp_exists, uz_exists=uz_exists)  # prefer ADP
         emp_pay_bucket = paytype_bucket(normalize_paytype_text(emp_paytype))
 
         for field in mapped_fields:
@@ -298,6 +344,17 @@ def run_comparison(file_bytes: bytes) -> bytes:
             uz_val = uzio_idx.at[emp_id, field] if uz_exists and field in uzio_idx.columns else ""
             adp_val = adp_idx.at[emp_id, adp_col] if (adp_exists and (adp_col in adp_idx.columns)) else ""
 
+            # --------- FALLBACKS to avoid "UZIO_Value blank but column B/C clearly has it" ----------
+            # If mapping row uses "Status" instead of the actual UZIO column, still show value from UZIO Employment Status.
+            if is_employment_status_field(field) and norm_blank(uz_val) == "" and norm_blank(uz_emp_status) != "":
+                uz_val = uz_emp_status
+
+            # If pay type is mapped but UZIO column label mismatch, still show pay type in UZIO_Value.
+            if is_pay_type_field(field) and norm_blank(uz_val) == "" and norm_blank(emp_paytype) != "":
+                # For display, keep original text, but comparison uses normalization (salary==salaried)
+                uz_val = emp_paytype
+
+            # ---------------- Status logic ----------------
             if not adp_exists and uz_exists:
                 status = "MISSING_IN_ADP"
             elif adp_exists and not uz_exists:
@@ -318,6 +375,8 @@ def run_comparison(file_bytes: bytes) -> bytes:
                         elif uzio_is_terminated(uz_n):
                             status = "OK"
                         else:
+                            # If UZIO has "terminated" equivalents, they will normalize via casefold;
+                            # otherwise treat as mismatch.
                             status = "MISMATCH"
                     else:
                         if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
@@ -454,17 +513,11 @@ def run_comparison(file_bytes: bytes) -> bytes:
 # ---------------- Streamlit UI ----------------
 st.set_page_config(page_title=APP_TITLE, layout="centered")
 st.title(APP_TITLE)
-st.write("Upload the Excel workbook (.xlsx). The app will generate the audit report and provide a download link.")
+st.write("Upload the Excel workbook (.xlsx). The tool will generate the audit report and provide a download button.")
 
 uploaded_file = st.file_uploader("Upload Excel workbook", type=["xlsx"])
 
-col1, col2 = st.columns(2)
-run_btn = col1.button("Run Audit", type="primary", disabled=(uploaded_file is None))
-reset_btn = col2.button("Reset")
-
-if reset_btn:
-    st.session_state.clear()
-    st.rerun()
+run_btn = st.button("Run Audit", type="primary", disabled=(uploaded_file is None))
 
 if run_btn:
     try:
