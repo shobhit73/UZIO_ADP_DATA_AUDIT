@@ -13,9 +13,18 @@ import streamlit as st
 # - No table previews on UI
 # - No sidebar / left panel
 # - Generates Excel report and provides download button
+#
+# OUTPUT TABS:
+#   - Summary
+#   - Field_Summary_By_Status
+#   - Mapping_ADP_Col_Missing
+#   - Comparison_Detail_AllFields
+#   - Mismatches_Only
+#
+# ADP is source of truth.
 # =========================================================
 
-APP_TITLE = "Onboarding ADP Data tool"
+APP_TITLE = "Data_Audit_Tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
@@ -148,7 +157,6 @@ def norm_emp_key_series(s: pd.Series) -> pd.Series:
     def _fix(v):
         v = str(v).strip()
         v = v.replace("\u00A0", " ")
-        # 123.0 -> 123
         if re.fullmatch(r"\d+\.0+", v):
             v = v.split(".")[0]
         return v
@@ -160,6 +168,9 @@ def is_termination_reason_field(field_name: str) -> bool:
 
 def is_employment_status_field(field_name: str) -> bool:
     return "employment status" in norm_colname(field_name).casefold()
+
+def is_status_field(field_name: str) -> bool:
+    return norm_colname(field_name).casefold() == "status"
 
 def status_contains_any(s: str, needles) -> bool:
     s = ("" if s is None else str(s)).casefold()
@@ -219,10 +230,7 @@ def is_hourly_rate_field(field_name: str) -> bool:
     f = norm_colname(field_name).casefold()
     return ("hourly pay rate" in f) or ("hourly rate" in f)
 
-# ---------- IMPORTANT FIX ----------
-# If UZIO value shows ACTIVE/TERMINATED/RETIRED for fields that should NEVER be employment status
-# (e.g., Marital Status, Protected Veteran Status, Disability Status), we DO NOT "copy" anything.
-# This indicates UZIO export/data misalignment. We treat such values as blank for those fields.
+# ---------- Guardrail: prevent ACTIVE/TERMINATED/RETIRED values leaking into non-status fields ----------
 EMP_STATUS_TOKENS = {"active", "terminated", "retired"}
 
 def field_allows_emp_status_value(field_name: str) -> bool:
@@ -234,24 +242,35 @@ def cleanse_uzio_value_for_field(field_name: str, uz_val):
         return uz_val
     s = str(uz_val).strip().casefold()
     if (s in EMP_STATUS_TOKENS) and (not field_allows_emp_status_value(field_name)):
-        return ""  # treat as missing (prevents wrong ACTIVE/TERMINATED in other *Status fields)
+        return ""
     return uz_val
+
+# ---------- NEW: Pay Type equivalence (UZIO Salaried == ADP Salary) ----------
+def is_pay_type_field(field_name: str) -> bool:
+    f = norm_colname(field_name).casefold()
+    return f == "pay type" or ("pay type" in f)
+
+def normalize_paytype_for_compare(x) -> str:
+    s = normalize_paytype_text(x)
+    # normalize common variants
+    if s in {"salary", "salaried"}:
+        return "salaried"
+    if s in {"hourly", "hour"}:
+        return "hourly"
+    return s
 
 # ---------- Core compare ----------
 def run_comparison(file_bytes: bytes) -> bytes:
     xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
 
-    # Read sheets
     uzio = pd.read_excel(xls, sheet_name=UZIO_SHEET, dtype=object)
     adp = pd.read_excel(xls, sheet_name=ADP_SHEET, dtype=object)
     mapping = pd.read_excel(xls, sheet_name=MAP_SHEET, dtype=object)
 
-    # Normalize column names
     uzio.columns = [norm_colname(c) for c in uzio.columns]
     adp.columns = [norm_colname(c) for c in adp.columns]
     mapping.columns = [norm_colname(c) for c in mapping.columns]
 
-    # Validate mapping headers (spelled "Coloumn" per your file)
     if "Uzio Coloumn" not in mapping.columns or "ADP Coloumn" not in mapping.columns:
         raise ValueError("Mapping sheet must contain columns: 'Uzio Coloumn' and 'ADP Coloumn'")
 
@@ -262,7 +281,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
     mapping_valid = mapping_valid[(mapping_valid["Uzio Coloumn"] != "") & (mapping_valid["ADP Coloumn"] != "")]
     mapping_valid = mapping_valid.drop_duplicates(subset=["Uzio Coloumn"], keep="first").copy()
 
-    # Detect join keys from mapping row where Uzio Coloumn contains "Employee ID"
     key_row = mapping_valid[mapping_valid["Uzio Coloumn"].str.contains("Employee ID", case=False, na=False)]
     if len(key_row) == 0:
         raise ValueError("Mapping sheet must include UZIO 'Employee ID' mapped to ADP key (usually 'Associate ID').")
@@ -275,11 +293,10 @@ def run_comparison(file_bytes: bytes) -> bytes:
     if ADP_KEY not in adp.columns:
         raise ValueError(f"ADP key column '{ADP_KEY}' not found in ADP Data tab.")
 
-    # Normalize keys
     uzio[UZIO_KEY] = norm_emp_key_series(uzio[UZIO_KEY])
     adp[ADP_KEY] = norm_emp_key_series(adp[ADP_KEY])
 
-    # If duplicates exist, keep first (prevents .at returning Series)
+    # Handle potential duplicate keys safely
     uzio = uzio.drop_duplicates(subset=[UZIO_KEY], keep="first").copy()
     adp = adp.drop_duplicates(subset=[ADP_KEY], keep="first").copy()
 
@@ -290,13 +307,12 @@ def run_comparison(file_bytes: bytes) -> bytes:
     uzio_idx = uzio.set_index(UZIO_KEY, drop=False)
     adp_idx = adp.set_index(ADP_KEY, drop=False)
 
-    # Map dict
     uz_to_adp = dict(zip(mapping_valid["Uzio Coloumn"], mapping_valid["ADP Coloumn"]))
     mapped_fields = [f for f in mapping_valid["Uzio Coloumn"].tolist() if f != UZIO_KEY]
 
     mapping_missing_adp_col = mapping_valid[~mapping_valid["ADP Coloumn"].isin(adp.columns)].copy()
 
-    # Employment Status column (UZIO) for the extra context column
+    # UZIO Employment Status column for context column
     uzio_employment_status_col = None
     for c in uzio.columns:
         if norm_colname(c).casefold() == "employment status":
@@ -317,7 +333,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
             return "" if norm_blank(v) == "" else str(v)
         return ""
 
-    # Pay Type mapping (prefer ADP)
+    # Pay Type mapping (prefer ADP) for context column and pay-type exceptions
     paytype_row = mapping_valid[mapping_valid["Uzio Coloumn"].str.contains(r"\bpay\s*type\b", case=False, na=False)]
     UZIO_PAYTYPE_COL = paytype_row.iloc[0]["Uzio Coloumn"] if len(paytype_row) else None
     ADP_PAYTYPE_COL  = paytype_row.iloc[0]["ADP Coloumn"]  if len(paytype_row) else None
@@ -351,7 +367,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
             adp_val = adp_idx.at[emp_id, adp_col] if (adp_exists and (adp_col in adp_idx.columns)) else ""
 
-            # Employee missing logic (ADP = truth)
+            # Employee missing logic (ADP truth)
             if not adp_exists and uz_exists:
                 status = "MISSING_IN_ADP"
             elif adp_exists and not uz_exists:
@@ -359,80 +375,93 @@ def run_comparison(file_bytes: bytes) -> bytes:
             elif adp_exists and uz_exists and (adp_col not in adp.columns):
                 status = "ADP_COLUMN_MISSING"
             else:
-                uz_n = norm_value(uz_val, field)
-                adp_n = norm_value(adp_val, field)
+                # --- Special: Pay Type equivalence (Salaried vs Salary) ---
+                if is_pay_type_field(field):
+                    uz_pt = normalize_paytype_for_compare(uz_val)
+                    adp_pt = normalize_paytype_for_compare(adp_val)
 
-                # Employment Status special rule
-                if is_employment_status_field(field) and adp_n != "":
-                    adp_is_term_or_ret = status_contains_any(adp_n, ["terminated", "retired"])
-                    if adp_is_term_or_ret:
-                        if uz_n == "":
-                            status = "UZIO_MISSING_VALUE"
-                        elif uzio_is_active(uz_n):
-                            status = "MISMATCH"
-                        elif uzio_is_terminated(uz_n):
-                            status = "OK"
-                        else:
-                            status = "MISMATCH"
-                    else:
-                        if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
-                            status = "OK"
-                        elif uz_n == "" and adp_n != "":
-                            status = "UZIO_MISSING_VALUE"
-                        elif uz_n != "" and adp_n == "":
-                            status = "ADP_MISSING_VALUE"
-                        else:
-                            status = "MISMATCH"
-
-                # Termination Reason special rule
-                elif is_termination_reason_field(field):
-                    uz_reason = normalize_reason_text(uz_val)
-                    adp_reason = normalize_reason_text(adp_val)
-
-                    if uz_reason == "other" and adp_reason in ALLOWED_TERM_REASONS:
+                    if (uz_pt == adp_pt) or (uz_pt == "" and adp_pt == ""):
                         status = "OK"
-                    else:
-                        if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
-                            status = "OK"
-                        elif uz_n == "" and adp_n != "":
-                            status = "UZIO_MISSING_VALUE"
-                        elif uz_n != "" and adp_n == "":
-                            status = "ADP_MISSING_VALUE"
-                        else:
-                            status = "MISMATCH"
-
-                # Default field compare
-                else:
-                    if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
-                        status = "OK"
-                    elif uz_n == "" and adp_n != "":
+                    elif uz_pt == "" and adp_pt != "":
                         status = "UZIO_MISSING_VALUE"
-                    elif uz_n != "" and adp_n == "":
+                    elif uz_pt != "" and adp_pt == "":
                         status = "ADP_MISSING_VALUE"
                     else:
                         status = "MISMATCH"
+                else:
+                    uz_n = norm_value(uz_val, field)
+                    adp_n = norm_value(adp_val, field)
 
-                    # PayType exceptions overriding UZIO_MISSING_VALUE
-                    if status == "UZIO_MISSING_VALUE":
-                        if emp_pay_bucket == "hourly" and is_annual_salary_field(field):
+                    # Employment Status special rule
+                    if is_employment_status_field(field) and adp_n != "":
+                        adp_is_term_or_ret = status_contains_any(adp_n, ["terminated", "retired"])
+                        if adp_is_term_or_ret:
+                            if uz_n == "":
+                                status = "UZIO_MISSING_VALUE"
+                            elif uzio_is_active(uz_n):
+                                status = "MISMATCH"
+                            elif uzio_is_terminated(uz_n):
+                                status = "OK"
+                            else:
+                                status = "MISMATCH"
+                        else:
+                            if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
+                                status = "OK"
+                            elif uz_n == "" and adp_n != "":
+                                status = "UZIO_MISSING_VALUE"
+                            elif uz_n != "" and adp_n == "":
+                                status = "ADP_MISSING_VALUE"
+                            else:
+                                status = "MISMATCH"
+
+                    # Termination Reason special rule
+                    elif is_termination_reason_field(field):
+                        uz_reason = normalize_reason_text(uz_val)
+                        adp_reason = normalize_reason_text(adp_val)
+
+                        if uz_reason == "other" and adp_reason in ALLOWED_TERM_REASONS:
                             status = "OK"
-                        elif emp_pay_bucket == "salaried" and is_hourly_rate_field(field):
+                        else:
+                            if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
+                                status = "OK"
+                            elif uz_n == "" and adp_n != "":
+                                status = "UZIO_MISSING_VALUE"
+                            elif uz_n != "" and adp_n == "":
+                                status = "ADP_MISSING_VALUE"
+                            else:
+                                status = "MISMATCH"
+
+                    # Default field compare
+                    else:
+                        if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
                             status = "OK"
+                        elif uz_n == "" and adp_n != "":
+                            status = "UZIO_MISSING_VALUE"
+                        elif uz_n != "" and adp_n == "":
+                            status = "ADP_MISSING_VALUE"
+                        else:
+                            status = "MISMATCH"
+
+                        # PayType exceptions overriding UZIO_MISSING_VALUE for amount/rate fields
+                        if status == "UZIO_MISSING_VALUE":
+                            if emp_pay_bucket == "hourly" and is_annual_salary_field(field):
+                                status = "OK"
+                            elif emp_pay_bucket == "salaried" and is_hourly_rate_field(field):
+                                status = "OK"
 
             rows.append({
                 "Employee ID": emp_id,
                 "Employment Status": uz_emp_status,
                 "Pay Type": emp_paytype,
                 "Field": field,
-                "UZIO_Value": uz_val,          # cleaned
-                "UZIO_Value_Raw": uz_val_raw,  # raw (helps you audit UZIO export issues)
+                "UZIO_Value": uz_val,   # ONLY ONE UZIO VALUE COLUMN (no raw column)
                 "ADP_Value": adp_val,
                 "ADP_SourceOfTruth_Status": status
             })
 
     comparison_detail = pd.DataFrame(rows)[[
         "Employee ID", "Employment Status", "Pay Type",
-        "Field", "UZIO_Value", "UZIO_Value_Raw", "ADP_Value", "ADP_SourceOfTruth_Status"
+        "Field", "UZIO_Value", "ADP_Value", "ADP_SourceOfTruth_Status"
     ]]
 
     mismatches_only = comparison_detail[comparison_detail["ADP_SourceOfTruth_Status"] != "OK"].copy()
@@ -503,7 +532,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
         ]
     })
 
-    # Write output to bytes
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
