@@ -6,34 +6,22 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-
 # =========================================================
-# UZIO vs ADP Comparison (ADP = Source of Truth) - Streamlit
-#
-# OUTPUT TABS:
-#   - Summary
-#   - Field_Summary_By_Status
-#   - Mapping_ADP_Col_Missing
-#   - Comparison_Detail_AllFields
-#   - Mismatches_Only
-#
-# Rules included:
-# 1) ZIPCODE compares first 5 digits (21239 vs 21239-4214 => OK)
-# 2) Gender normalization: ADP Man/Male -> male, Woman/Female -> female
-# 3) Employment Status: ADP retired/terminated => UZIO terminated OK; UZIO active => mismatch
-# 4) Termination Reason: UZIO "Other" + ADP reason in allowed list => OK
-# 5) PayType exceptions:
-#    - HOURLY: missing Annual Salary in UZIO => OK
-#    - SALARIED: missing Hourly Pay Rate in UZIO => OK
+# Data_Audit_Tool (Streamlit)
+# - No previews (no tables shown)
+# - No sidebar / left panel inputs
+# - User uploads .xlsx -> clicks Run -> gets download link/button for report
 # =========================================================
 
-UZIO_SHEET_DEFAULT = "Uzio Data"
-ADP_SHEET_DEFAULT = "ADP Data"
-MAP_SHEET_DEFAULT = "Mapping Sheet"
-
+APP_TITLE = "Data_Audit_Tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
-# ---------- Helpers ----------
+# Fixed sheet names (as per your workbook)
+UZIO_SHEET = "Uzio Data"
+ADP_SHEET = "ADP Data"
+MAP_SHEET = "Mapping Sheet"
+
+# ---------------- Helpers ----------------
 def norm_colname(c: str) -> str:
     if c is None:
         return ""
@@ -113,13 +101,10 @@ def norm_value(x, field_name: str):
 
     if any(k in f for k in GENDER_KEYWORDS):
         return norm_gender(x)
-
     if any(k in f for k in SSN_KEYWORDS):
         return digits_only(x)
-
     if any(k in f for k in ZIP_KEYWORDS):
         return norm_zip_first5(x)
-
     if any(k in f for k in DATE_KEYWORDS):
         return try_parse_date(x)
 
@@ -147,7 +132,7 @@ def norm_emp_key_series(s: pd.Series) -> pd.Series:
         return v
     return s2.map(_fix)
 
-# ---------- Rule helpers ----------
+# ---------------- Rule helpers ----------------
 def is_termination_reason_field(field_name: str) -> bool:
     return "termination reason" in norm_colname(field_name).casefold()
 
@@ -212,27 +197,13 @@ def is_hourly_rate_field(field_name: str) -> bool:
     f = norm_colname(field_name).casefold()
     return ("hourly pay rate" in f) or ("hourly rate" in f)
 
-# ---------- Core runner ----------
-def run_comparison(file_bytes: bytes,
-                   uzio_sheet: str,
-                   adp_sheet: str,
-                   map_sheet: str) -> dict:
-    """
-    Returns dict of output DataFrames + report bytes:
-      {
-        "summary": df,
-        "field_summary_by_status": df,
-        "mapping_missing_adp_col": df,
-        "comparison_detail": df,
-        "mismatches_only": df,
-        "report_bytes": bytes
-      }
-    """
+# ---------------- Core runner ----------------
+def run_comparison(file_bytes: bytes) -> bytes:
     xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
 
-    uzio = pd.read_excel(xls, sheet_name=uzio_sheet, dtype=object)
-    adp = pd.read_excel(xls, sheet_name=adp_sheet, dtype=object)
-    mapping = pd.read_excel(xls, sheet_name=map_sheet, dtype=object)
+    uzio = pd.read_excel(xls, sheet_name=UZIO_SHEET, dtype=object)
+    adp = pd.read_excel(xls, sheet_name=ADP_SHEET, dtype=object)
+    mapping = pd.read_excel(xls, sheet_name=MAP_SHEET, dtype=object)
 
     uzio.columns = [norm_colname(c) for c in uzio.columns]
     adp.columns = [norm_colname(c) for c in adp.columns]
@@ -400,12 +371,10 @@ def run_comparison(file_bytes: bytes,
                 "ADP_SourceOfTruth_Status": status
             })
 
-    comparison_detail = pd.DataFrame(rows)
-    comparison_detail = comparison_detail[[
+    comparison_detail = pd.DataFrame(rows)[[
         "Employee ID", "Employment Status", "Pay Type",
         "Field", "UZIO_Value", "ADP_Value", "ADP_SourceOfTruth_Status"
     ]]
-
     mismatches_only = comparison_detail[comparison_detail["ADP_SourceOfTruth_Status"] != "OK"].copy()
 
     # Field Summary By Status
@@ -426,7 +395,6 @@ def run_comparison(file_bytes: bytes,
         aggfunc="count",
         fill_value=0
     )
-
     for c in cols_needed:
         if c not in pivot.columns:
             pivot[c] = 0
@@ -473,7 +441,6 @@ def run_comparison(file_bytes: bytes,
         ]
     })
 
-    # Build Excel report in-memory
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
@@ -482,72 +449,35 @@ def run_comparison(file_bytes: bytes,
         comparison_detail.to_excel(writer, sheet_name="Comparison_Detail_AllFields", index=False)
         mismatches_only.to_excel(writer, sheet_name="Mismatches_Only", index=False)
 
-    return {
-        "summary": summary,
-        "field_summary_by_status": field_summary_by_status,
-        "mapping_missing_adp_col": mapping_missing_adp_col,
-        "comparison_detail": comparison_detail,
-        "mismatches_only": mismatches_only,
-        "report_bytes": out.getvalue(),
-    }
+    return out.getvalue()
 
+# ---------------- Streamlit UI ----------------
+st.set_page_config(page_title=APP_TITLE, layout="centered")
+st.title(APP_TITLE)
+st.write("Upload the Excel workbook (.xlsx). The app will generate the audit report and provide a download link.")
 
-# ======================
-# Streamlit UI
-# ======================
-st.set_page_config(page_title="UZIO vs ADP Comparison", layout="wide")
-st.title("UZIO vs ADP Comparison (ADP = Source of Truth)")
-st.caption("Upload the Excel workbook with sheets: Uzio Data, ADP Data, Mapping Sheet. Then download the generated report.")
+uploaded_file = st.file_uploader("Upload Excel workbook", type=["xlsx"])
 
-with st.sidebar:
-    st.header("Inputs")
-    uzio_sheet = st.text_input("UZIO sheet name", value=UZIO_SHEET_DEFAULT)
-    adp_sheet = st.text_input("ADP sheet name", value=ADP_SHEET_DEFAULT)
-    map_sheet = st.text_input("Mapping sheet name", value=MAP_SHEET_DEFAULT)
-    st.divider()
-    st.write("Output file name:")
-    st.code(OUTPUT_FILENAME)
+col1, col2 = st.columns(2)
+run_btn = col1.button("Run Audit", type="primary", disabled=(uploaded_file is None))
+reset_btn = col2.button("Reset")
 
-uploaded_file = st.file_uploader("Upload Excel workbook (.xlsx)", type=["xlsx"])
+if reset_btn:
+    st.session_state.clear()
+    st.rerun()
 
-run = st.button("Run Comparison", type="primary", disabled=(uploaded_file is None))
-
-if run:
+if run_btn:
     try:
-        file_bytes = uploaded_file.getvalue()
-        with st.spinner("Running comparison..."):
-            result = run_comparison(
-                file_bytes=file_bytes,
-                uzio_sheet=uzio_sheet,
-                adp_sheet=adp_sheet,
-                map_sheet=map_sheet,
-            )
+        with st.spinner("Running audit..."):
+            report_bytes = run_comparison(uploaded_file.getvalue())
 
-        st.success("Report generated successfully.")
-
-        # Quick KPIs
-        col1, col2 = st.columns([1, 2], vertical_alignment="top")
-        with col1:
-            st.subheader("Summary")
-            st.dataframe(result["summary"], use_container_width=True, hide_index=True)
-
-            st.download_button(
-                label="Download Report (.xlsx)",
-                data=result["report_bytes"],
-                file_name=OUTPUT_FILENAME,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-            )
-
-        with col2:
-            st.subheader("Field Summary By Status (Top 30 by NOT_OK)")
-            fs = result["field_summary_by_status"].copy()
-            fs = fs.sort_values("NOT_OK", ascending=False).head(30)
-            st.dataframe(fs, use_container_width=True, hide_index=True)
-
-            st.subheader("Mismatches Only (Preview)")
-            st.dataframe(result["mismatches_only"].head(200), use_container_width=True, hide_index=True)
-
+        st.success("Report generated. Download it below:")
+        st.download_button(
+            label="Download Audit Report (.xlsx)",
+            data=report_bytes,
+            file_name=OUTPUT_FILENAME,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
     except Exception as e:
         st.error(f"Failed: {e}")
-        st.stop()
