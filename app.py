@@ -24,7 +24,7 @@ import streamlit as st
 # ADP is source of truth.
 # =========================================================
 
-APP_TITLE = "Onboarding ADP Data Tool"
+APP_TITLE = "Census Uzio ADP Comparison Too;"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
