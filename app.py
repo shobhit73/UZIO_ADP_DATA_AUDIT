@@ -14,17 +14,17 @@ import streamlit as st
 # - No sidebar / left panel
 # - Generates Excel report and provides download button
 #
-# OUTPUT TABS:
+# OUTPUT TABS (UPDATED ONLY AS REQUESTED):
 #   - Summary
-#   - Field_Summary_By_Status
-#   - Mapping_ADP_Col_Missing
+#   - Field_Summary_By_Status   (Columns G,H,I removed)
 #   - Comparison_Detail_AllFields
-#   - Mismatches_Only
 #
-# ADP is source of truth.
+# Removed sheets from output report (as requested):
+#   - Mismatches_Only
+#   - Mapping_ADP_Col_Missing
 # =========================================================
 
-APP_TITLE = "Census Uzio ADP Comparison Tool;"
+APP_TITLE = "Data_Audit_Tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
@@ -169,9 +169,6 @@ def is_termination_reason_field(field_name: str) -> bool:
 def is_employment_status_field(field_name: str) -> bool:
     return "employment status" in norm_colname(field_name).casefold()
 
-def is_status_field(field_name: str) -> bool:
-    return norm_colname(field_name).casefold() == "status"
-
 def status_contains_any(s: str, needles) -> bool:
     s = ("" if s is None else str(s)).casefold()
     return any(n in s for n in needles)
@@ -245,14 +242,13 @@ def cleanse_uzio_value_for_field(field_name: str, uz_val):
         return ""
     return uz_val
 
-# ---------- NEW: Pay Type equivalence (UZIO Salaried == ADP Salary) ----------
+# ---------- Pay Type equivalence (UZIO Salaried == ADP Salary) ----------
 def is_pay_type_field(field_name: str) -> bool:
     f = norm_colname(field_name).casefold()
     return f == "pay type" or ("pay type" in f)
 
 def normalize_paytype_for_compare(x) -> str:
     s = normalize_paytype_text(x)
-    # normalize common variants
     if s in {"salary", "salaried"}:
         return "salaried"
     if s in {"hourly", "hour"}:
@@ -296,7 +292,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
     uzio[UZIO_KEY] = norm_emp_key_series(uzio[UZIO_KEY])
     adp[ADP_KEY] = norm_emp_key_series(adp[ADP_KEY])
 
-    # Handle potential duplicate keys safely
     uzio = uzio.drop_duplicates(subset=[UZIO_KEY], keep="first").copy()
     adp = adp.drop_duplicates(subset=[ADP_KEY], keep="first").copy()
 
@@ -310,9 +305,10 @@ def run_comparison(file_bytes: bytes) -> bytes:
     uz_to_adp = dict(zip(mapping_valid["Uzio Coloumn"], mapping_valid["ADP Coloumn"]))
     mapped_fields = [f for f in mapping_valid["Uzio Coloumn"].tolist() if f != UZIO_KEY]
 
+    # Keep (unchanged) even though we won't output the sheet anymore
     mapping_missing_adp_col = mapping_valid[~mapping_valid["ADP Coloumn"].isin(adp.columns)].copy()
 
-    # UZIO Employment Status column for context column
+    # Employment Status column (UZIO)
     uzio_employment_status_col = None
     for c in uzio.columns:
         if norm_colname(c).casefold() == "employment status":
@@ -333,7 +329,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
             return "" if norm_blank(v) == "" else str(v)
         return ""
 
-    # Pay Type mapping (prefer ADP) for context column and pay-type exceptions
+    # Pay Type mapping (prefer ADP)
     paytype_row = mapping_valid[mapping_valid["Uzio Coloumn"].str.contains(r"\bpay\s*type\b", case=False, na=False)]
     UZIO_PAYTYPE_COL = paytype_row.iloc[0]["Uzio Coloumn"] if len(paytype_row) else None
     ADP_PAYTYPE_COL  = paytype_row.iloc[0]["ADP Coloumn"]  if len(paytype_row) else None
@@ -349,7 +345,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
                 return str(v)
         return ""
 
-    # ---------- Comparison ----------
+    # ---------- Build FULL comparison ----------
     rows = []
     for emp_id in all_keys:
         uz_exists = emp_id in uzio_idx.index
@@ -367,7 +363,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
             adp_val = adp_idx.at[emp_id, adp_col] if (adp_exists and (adp_col in adp_idx.columns)) else ""
 
-            # Employee missing logic (ADP truth)
             if not adp_exists and uz_exists:
                 status = "MISSING_IN_ADP"
             elif adp_exists and not uz_exists:
@@ -375,7 +370,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
             elif adp_exists and uz_exists and (adp_col not in adp.columns):
                 status = "ADP_COLUMN_MISSING"
             else:
-                # --- Special: Pay Type equivalence (Salaried vs Salary) ---
                 if is_pay_type_field(field):
                     uz_pt = normalize_paytype_for_compare(uz_val)
                     adp_pt = normalize_paytype_for_compare(adp_val)
@@ -392,7 +386,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
                     uz_n = norm_value(uz_val, field)
                     adp_n = norm_value(adp_val, field)
 
-                    # Employment Status special rule
                     if is_employment_status_field(field) and adp_n != "":
                         adp_is_term_or_ret = status_contains_any(adp_n, ["terminated", "retired"])
                         if adp_is_term_or_ret:
@@ -414,7 +407,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
                             else:
                                 status = "MISMATCH"
 
-                    # Termination Reason special rule
                     elif is_termination_reason_field(field):
                         uz_reason = normalize_reason_text(uz_val)
                         adp_reason = normalize_reason_text(adp_val)
@@ -430,8 +422,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
                                 status = "ADP_MISSING_VALUE"
                             else:
                                 status = "MISMATCH"
-
-                    # Default field compare
                     else:
                         if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
                             status = "OK"
@@ -442,7 +432,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
                         else:
                             status = "MISMATCH"
 
-                        # PayType exceptions overriding UZIO_MISSING_VALUE for amount/rate fields
                         if status == "UZIO_MISSING_VALUE":
                             if emp_pay_bucket == "hourly" and is_annual_salary_field(field):
                                 status = "OK"
@@ -454,7 +443,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
                 "Employment Status": uz_emp_status,
                 "Pay Type": emp_paytype,
                 "Field": field,
-                "UZIO_Value": uz_val,   # ONLY ONE UZIO VALUE COLUMN (no raw column)
+                "UZIO_Value": uz_val,
                 "ADP_Value": adp_val,
                 "ADP_SourceOfTruth_Status": status
             })
@@ -466,7 +455,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
     mismatches_only = comparison_detail[comparison_detail["ADP_SourceOfTruth_Status"] != "OK"].copy()
 
-    # Field Summary By Status
+    # ---------- Field Summary By Status ----------
     cols_needed = [
         "OK",
         "MISMATCH",
@@ -506,7 +495,14 @@ def run_comparison(file_bytes: bytes) -> bytes:
         "ADP_COLUMN_MISSING",
     ]]
 
-    # Summary metrics
+    # ===== ONLY CHANGE #1: remove columns G,H,I from Field_Summary_By_Status =====
+    # G=ADP_MISSING_VALUE, H=MISSING_IN_UZIO, I=MISSING_IN_ADP
+    field_summary_by_status = field_summary_by_status.drop(
+        columns=["ADP_MISSING_VALUE", "MISSING_IN_UZIO", "MISSING_IN_ADP"],
+        errors="ignore"
+    )
+
+    # ---------- Summary metrics (UNCHANGED) ----------
     summary = pd.DataFrame({
         "Metric": [
             "Employees in UZIO sheet",
@@ -532,13 +528,13 @@ def run_comparison(file_bytes: bytes) -> bytes:
         ]
     })
 
+    # ---------- Export report ----------
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
         field_summary_by_status.to_excel(writer, sheet_name="Field_Summary_By_Status", index=False)
-        mapping_missing_adp_col.to_excel(writer, sheet_name="Mapping_ADP_Col_Missing", index=False)
         comparison_detail.to_excel(writer, sheet_name="Comparison_Detail_AllFields", index=False)
-        mismatches_only.to_excel(writer, sheet_name="Mismatches_Only", index=False)
+        # ===== ONLY CHANGE #2 and #3: DO NOT write Mapping_ADP_Col_Missing and Mismatches_Only sheets =====
 
     return out.getvalue()
 
