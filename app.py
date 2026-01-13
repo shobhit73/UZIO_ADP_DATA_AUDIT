@@ -24,7 +24,7 @@ import streamlit as st
 #   - Mapping_ADP_Col_Missing
 # =========================================================
 
-APP_TITLE = "Data_Audit_Tool"
+APP_TITLE = "ADP UZIO CENSUS COMPARE TOOL"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
