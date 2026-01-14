@@ -14,17 +14,17 @@ import streamlit as st
 # - No sidebar / left panel
 # - Generates Excel report and provides download button
 #
-# OUTPUT TABS (UPDATED ONLY AS REQUESTED):
+# OUTPUT TABS:
 #   - Summary
 #   - Field_Summary_By_Status   (Columns G,H,I removed)
 #   - Comparison_Detail_AllFields
 #
-# Removed sheets from output report (as requested):
+# Removed sheets from output report:
 #   - Mismatches_Only
 #   - Mapping_ADP_Col_Missing
 # =========================================================
 
-APP_TITLE = "ADP UZIO CENSUS COMPARE TOOL"
+APP_TITLE = "Data_Audit_Tool"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 UZIO_SHEET = "Uzio Data"
@@ -85,6 +85,17 @@ def digits_only(x):
         return ""
     return re.sub(r"\D", "", str(x))
 
+def norm_ssn_9digits(x):
+    # ONLY CHANGE: SSN compare as 9 digits (pad leading zeros if Excel dropped them)
+    d = digits_only(x)
+    if d == "":
+        return ""
+    if len(d) < 9:
+        return d.zfill(9)
+    if len(d) > 9:
+        return d[-9:]
+    return d
+
 def norm_zip_first5(x):
     x = norm_blank(x)
     if x == "":
@@ -106,6 +117,8 @@ DATE_KEYWORDS = {"date", "dob", "birth"}
 SSN_KEYWORDS = {"ssn", "tax id"}
 ZIP_KEYWORDS = {"zip", "zipcode", "postal"}
 GENDER_KEYWORDS = {"gender"}
+PHONE_KEYWORDS = {"phone"}
+MIDDLE_INITIAL_KEYWORDS = {"middle initial"}  # ONLY CHANGE: treat as initial vs full middle name
 
 def norm_gender(x):
     x = norm_blank(x)
@@ -119,16 +132,31 @@ def norm_gender(x):
         return "male"
     return s
 
+def norm_middle_initial(x):
+    # ONLY CHANGE: compare middle initial to the first letter of ADP middle name
+    x = norm_blank(x)
+    if x == "":
+        return ""
+    s = str(x).strip()
+    m = re.search(r"[A-Za-z]", s)
+    return (m.group(0).casefold() if m else "")
+
 def norm_value(x, field_name: str):
     f = norm_colname(field_name).lower()
     x = norm_blank(x)
     if x == "":
         return ""
 
+    if any(k in f for k in MIDDLE_INITIAL_KEYWORDS):  # ONLY CHANGE
+        return norm_middle_initial(x)
+
     if any(k in f for k in GENDER_KEYWORDS):
         return norm_gender(x)
 
-    if any(k in f for k in SSN_KEYWORDS):
+    if any(k in f for k in SSN_KEYWORDS):  # ONLY CHANGE: use 9-digit padded SSN
+        return norm_ssn_9digits(x)
+
+    if any(k in f for k in PHONE_KEYWORDS):
         return digits_only(x)
 
     if any(k in f for k in ZIP_KEYWORDS):
@@ -305,7 +333,6 @@ def run_comparison(file_bytes: bytes) -> bytes:
     uz_to_adp = dict(zip(mapping_valid["Uzio Coloumn"], mapping_valid["ADP Coloumn"]))
     mapped_fields = [f for f in mapping_valid["Uzio Coloumn"].tolist() if f != UZIO_KEY]
 
-    # Keep (unchanged) even though we won't output the sheet anymore
     mapping_missing_adp_col = mapping_valid[~mapping_valid["ADP Coloumn"].isin(adp.columns)].copy()
 
     # Employment Status column (UZIO)
@@ -495,14 +522,14 @@ def run_comparison(file_bytes: bytes) -> bytes:
         "ADP_COLUMN_MISSING",
     ]]
 
-    # ===== ONLY CHANGE #1: remove columns G,H,I from Field_Summary_By_Status =====
+    # Remove columns G,H,I from Field_Summary_By_Status
     # G=ADP_MISSING_VALUE, H=MISSING_IN_UZIO, I=MISSING_IN_ADP
     field_summary_by_status = field_summary_by_status.drop(
         columns=["ADP_MISSING_VALUE", "MISSING_IN_UZIO", "MISSING_IN_ADP"],
         errors="ignore"
     )
 
-    # ---------- Summary metrics (UNCHANGED) ----------
+    # ---------- Summary metrics ----------
     summary = pd.DataFrame({
         "Metric": [
             "Employees in UZIO sheet",
@@ -534,7 +561,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
         summary.to_excel(writer, sheet_name="Summary", index=False)
         field_summary_by_status.to_excel(writer, sheet_name="Field_Summary_By_Status", index=False)
         comparison_detail.to_excel(writer, sheet_name="Comparison_Detail_AllFields", index=False)
-        # ===== ONLY CHANGE #2 and #3: DO NOT write Mapping_ADP_Col_Missing and Mismatches_Only sheets =====
+        # Do NOT write Mapping_ADP_Col_Missing and Mismatches_Only
 
     return out.getvalue()
 
