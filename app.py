@@ -113,7 +113,7 @@ def norm_zip_first5(x):
     return s[:5]
 
 NUMERIC_KEYWORDS = {"salary", "rate", "hours", "amount"}
-DATE_KEYWORDS = {"date", "dob", "birth"}
+DATE_KEYWORDS = {"date", "dob", "birth", "doh", "hire"}
 SSN_KEYWORDS = {"ssn", "tax id"}
 ZIP_KEYWORDS = {"zip", "zipcode", "postal"}
 GENDER_KEYWORDS = {"gender"}
