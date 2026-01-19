@@ -383,19 +383,23 @@ def run_comparison(file_bytes: bytes) -> bytes:
         emp_pay_bucket = paytype_bucket(normalize_paytype_text(emp_paytype))
 
         for field in mapped_fields:
-            adp_col = uz_to_adp.get(field, "")
+            # Check if columns exist in the usage data
+            uz_col_missing = (field not in uzio.columns)
+            adp_col_missing = (adp_col not in adp.columns)
 
-            uz_val_raw = uzio_idx.at[emp_id, field] if (uz_exists and field in uzio_idx.columns) else ""
+            uz_val_raw = uzio_idx.at[emp_id, field] if (uz_exists and not uz_col_missing) else ""
             uz_val = cleanse_uzio_value_for_field(field, uz_val_raw)
 
-            adp_val = adp_idx.at[emp_id, adp_col] if (adp_exists and (adp_col in adp_idx.columns)) else ""
+            adp_val = adp_idx.at[emp_id, adp_col] if (adp_exists and not adp_col_missing) else ""
 
             if not adp_exists and uz_exists:
                 status = "Employee ID Not Found in ADP"
             elif adp_exists and not uz_exists:
                 status = "Employee ID Not Found in Uzio"
-            elif adp_exists and uz_exists and (adp_col not in adp.columns):
+            elif adp_exists and uz_exists and adp_col_missing:
                 status = "Column Missing in ADP Sheet"
+            elif adp_exists and uz_exists and uz_col_missing:
+                status = "Column Missing in Uzio Sheet"
             else:
                 if is_pay_type_field(field):
                     uz_pt = normalize_paytype_for_compare(uz_val)
@@ -404,9 +408,9 @@ def run_comparison(file_bytes: bytes) -> bytes:
                     if (uz_pt == adp_pt) or (uz_pt == "" and adp_pt == ""):
                         status = "Data Match"
                     elif uz_pt == "" and adp_pt != "":
-                        status = "Missing in Uzio (ADP has value)"
+                        status = "Value missing in Uzio (ADP has value)"
                     elif uz_pt != "" and adp_pt == "":
-                        status = "Missing in ADP (Uzio has value)"
+                        status = "Value missing in ADP (Uzio has value)"
                     else:
                         status = "Data Mismatch"
                 else:
@@ -417,7 +421,7 @@ def run_comparison(file_bytes: bytes) -> bytes:
                         adp_is_term_or_ret = status_contains_any(adp_n, ["terminated", "retired"])
                         if adp_is_term_or_ret:
                             if uz_n == "":
-                                status = "Missing in Uzio (ADP has value)"
+                                status = "Value missing in Uzio (ADP has value)"
                             elif uzio_is_active(uz_n):
                                 status = "Data Mismatch"
                             elif uzio_is_terminated(uz_n):
@@ -428,9 +432,9 @@ def run_comparison(file_bytes: bytes) -> bytes:
                             if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
                                 status = "Data Match"
                             elif uz_n == "" and adp_n != "":
-                                status = "Missing in Uzio (ADP has value)"
+                                status = "Value missing in Uzio (ADP has value)"
                             elif uz_n != "" and adp_n == "":
-                                status = "Missing in ADP (Uzio has value)"
+                                status = "Value missing in ADP (Uzio has value)"
                             else:
                                 status = "Data Mismatch"
 
@@ -444,22 +448,22 @@ def run_comparison(file_bytes: bytes) -> bytes:
                             if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
                                 status = "Data Match"
                             elif uz_n == "" and adp_n != "":
-                                status = "Missing in Uzio (ADP has value)"
+                                status = "Value missing in Uzio (ADP has value)"
                             elif uz_n != "" and adp_n == "":
-                                status = "Missing in ADP (Uzio has value)"
+                                status = "Value missing in ADP (Uzio has value)"
                             else:
                                 status = "Data Mismatch"
                     else:
                         if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
                             status = "Data Match"
                         elif uz_n == "" and adp_n != "":
-                            status = "Missing in Uzio (ADP has value)"
+                            status = "Value missing in Uzio (ADP has value)"
                         elif uz_n != "" and adp_n == "":
-                            status = "Missing in ADP (Uzio has value)"
+                            status = "Value missing in ADP (Uzio has value)"
                         else:
                             status = "Data Mismatch"
 
-                        if status == "Missing in Uzio (ADP has value)":
+                        if status == "Value missing in Uzio (ADP has value)":
                             if emp_pay_bucket == "hourly" and is_annual_salary_field(field):
                                 status = "Data Match"
                             elif emp_pay_bucket == "salaried" and is_hourly_rate_field(field):
@@ -486,11 +490,12 @@ def run_comparison(file_bytes: bytes) -> bytes:
     cols_needed = [
         "Data Match",
         "Data Mismatch",
-        "Missing in Uzio (ADP has value)",
-        "Missing in ADP (Uzio has value)",
+        "Value missing in Uzio (ADP has value)",
+        "Value missing in ADP (Uzio has value)",
         "Employee ID Not Found in Uzio",
         "Employee ID Not Found in ADP",
         "Column Missing in ADP Sheet",
+        "Column Missing in Uzio Sheet",
     ]
 
     pivot = comparison_detail.pivot_table(
@@ -515,17 +520,18 @@ def run_comparison(file_bytes: bytes) -> bytes:
         "Data Match",
         "NOT_OK",
         "Data Mismatch",
-        "Missing in Uzio (ADP has value)",
-        "Missing in ADP (Uzio has value)",
+        "Value missing in Uzio (ADP has value)",
+        "Value missing in ADP (Uzio has value)",
         "Employee ID Not Found in Uzio",
         "Employee ID Not Found in ADP",
         "Column Missing in ADP Sheet",
+        "Column Missing in Uzio Sheet",
     ]]
 
     # Remove columns G,H,I from Field_Summary_By_Status
-    # G=Missing in ADP (Uzio has value), H=Employee ID Not Found in Uzio, I=Employee ID Not Found in ADP
+    # G=Value missing in ADP (Uzio has value), H=Employee ID Not Found in Uzio, I=Employee ID Not Found in ADP
     field_summary_by_status = field_summary_by_status.drop(
-        columns=["Missing in ADP (Uzio has value)", "Employee ID Not Found in Uzio", "Employee ID Not Found in ADP"],
+        columns=["Value missing in ADP (Uzio has value)", "Employee ID Not Found in Uzio", "Employee ID Not Found in ADP"],
         errors="ignore"
     )
 
