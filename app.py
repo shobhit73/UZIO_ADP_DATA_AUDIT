@@ -531,10 +531,10 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
     # Remove columns H,I from Field_Summary_By_Status (keep Value missing in ADP)
     # H=Employee ID Not Found in Uzio, I=Employee ID Not Found in ADP
-    field_summary_by_status = field_summary_by_status.drop(
-        columns=["Employee ID Not Found in Uzio", "Employee ID Not Found in ADP"],
-        errors="ignore"
-    )
+    # field_summary_by_status = field_summary_by_status.drop(
+    #     columns=["Employee ID Not Found in Uzio", "Employee ID Not Found in ADP"],
+    #     errors="ignore"
+    # )
 
     # ---------- Summary metrics ----------
     summary = pd.DataFrame({
