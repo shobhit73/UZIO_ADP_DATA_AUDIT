@@ -383,6 +383,8 @@ def run_comparison(file_bytes: bytes) -> bytes:
         emp_pay_bucket = paytype_bucket(normalize_paytype_text(emp_paytype))
 
         for field in mapped_fields:
+            adp_col = uz_to_adp.get(field, "")
+            
             # Check if columns exist in the usage data
             uz_col_missing = (field not in uzio.columns)
             adp_col_missing = (adp_col not in adp.columns)
