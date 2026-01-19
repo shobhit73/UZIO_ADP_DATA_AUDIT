@@ -514,13 +514,12 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
     pivot["Total"] = pivot.sum(axis=1)
     pivot["Data Match"] = pivot["Data Match"].astype(int)
-    pivot["NOT_OK"] = (pivot["Total"] - pivot["Data Match"]).astype(int)
+    # Removing NOT_OK aggregate column as per user request to avoid confusion with Data Mismatch
 
     field_summary_by_status = pivot.reset_index()[[
         "Field",
         "Total",
         "Data Match",
-        "NOT_OK",
         "Data Mismatch",
         "Value missing in Uzio (ADP has value)",
         "Value missing in ADP (Uzio has value)",
