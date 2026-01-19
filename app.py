@@ -25,7 +25,7 @@ import streamlit as st
 # =========================================================
 
 APP_TITLE = "Census ADP and Uzio Data Review Tool"
-OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
+# OUTPUT_FILENAME will be generated dynamically
 
 UZIO_SHEET = "Uzio Data"
 ADP_SHEET = "ADP Data"
@@ -584,10 +584,14 @@ if run_btn:
             report_bytes = run_comparison(uploaded_file.getvalue())
 
         st.success("Report generated.")
+        
+        today_str = date.today().isoformat()  # YYYY-MM-DD
+        out_filename = f"Client_Name_ADP_Census_Data_Audit_{today_str}.xlsx"
+        
         st.download_button(
             label="Download Report (.xlsx)",
             data=report_bytes,
-            file_name=OUTPUT_FILENAME,
+            file_name=out_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
