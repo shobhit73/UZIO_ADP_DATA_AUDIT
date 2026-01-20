@@ -119,6 +119,13 @@ ZIP_KEYWORDS = {"zip", "zipcode", "postal"}
 GENDER_KEYWORDS = {"gender"}
 PHONE_KEYWORDS = {"phone"}
 MIDDLE_INITIAL_KEYWORDS = {"middle initial"}  # ONLY CHANGE: treat as initial vs full middle name
+JOB_TITLE_KEYWORDS = {"job title", "position title"}
+
+JOB_TITLE_MAPPINGS = {
+    "admin": "administrator",
+    "management": "manager",
+    "dsp owner": "owner"
+}
 
 def norm_gender(x):
     x = norm_blank(x)
@@ -141,6 +148,14 @@ def norm_middle_initial(x):
     m = re.search(r"[A-Za-z]", s)
     return (m.group(0).casefold() if m else "")
 
+def norm_job_title(x):
+    x = norm_blank(x)
+    if x == "":
+        return ""
+    s = str(x).replace("\u00A0", " ")
+    s = re.sub(r"\s+", " ", s).strip().casefold()
+    return JOB_TITLE_MAPPINGS.get(s, s)
+
 def norm_value(x, field_name: str):
     f = norm_colname(field_name).lower()
     x = norm_blank(x)
@@ -152,6 +167,9 @@ def norm_value(x, field_name: str):
 
     if any(k in f for k in GENDER_KEYWORDS):
         return norm_gender(x)
+
+    if any(k in f for k in JOB_TITLE_KEYWORDS):
+        return norm_job_title(x)
 
     if any(k in f for k in SSN_KEYWORDS):  # ONLY CHANGE: use 9-digit padded SSN
         return norm_ssn_9digits(x)
