@@ -31,13 +31,15 @@ UZIO_SHEET = "Uzio Data"
 ADP_SHEET = "ADP Data"
 MAP_SHEET = "Mapping Sheet"
 
-# ---------- UI: Hide sidebar + Streamlit chrome ----------
-st.set_page_config(page_title=APP_TITLE, layout="centered", initial_sidebar_state="collapsed")
+# ---------- UI: Enable Sidebar for Multi-page support ----------
+st.set_page_config(page_title=APP_TITLE, layout="centered", initial_sidebar_state="expanded")
+
+# Optional: Hide header/footer but KEEP SIDEBAR
 st.markdown(
     """
     <style>
-      [data-testid="stSidebar"] { display: none !important; }
-      [data-testid="collapsedControl"] { display: none !important; }
+      /* [data-testid="stSidebar"] { display: none !important; }  <-- REMOVED to show sidebar */
+      /* [data-testid="collapsedControl"] { display: none !important; } <-- REMOVED */
       header { display: none !important; }
       footer { display: none !important; }
     </style>
