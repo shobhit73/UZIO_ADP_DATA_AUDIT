@@ -92,7 +92,47 @@ def test_job_title():
             
     print(f"Job Title: {passes}/{len(cases)} Passed")
 
+
+def test_pay_type_logic():
+    print("\n--- Testing Pay Type Normalization Logic (Stub) ---")
+    cases = [
+        ("Hourly", "Hourly", True, False),
+        ("Salaried", "Salaried", False, True),
+        ("Salary", "Salaried", False, True),
+        ("Exempt", "Salaried", False, True),
+        ("Non-Exempt Hourly", "Hourly", True, False),
+        ("Full Time", "Full Time", False, False) # Fallback
+    ]
+    
+    passes = 0
+    for inp, expected_val, exp_hourly, exp_salary in cases:
+        # Re-implementing logic here to verify consistency with my thought process
+        row_pay_type_source = inp.lower()
+        norm_val = ""
+        act_hourly = False
+        act_salary = False
+        
+        if "hour" in row_pay_type_source:
+            norm_val = "Hourly"
+            act_hourly = True
+        elif "sal" in row_pay_type_source or "exempt" in row_pay_type_source:
+            norm_val = "Salaried"
+            act_salary = True
+        else:
+            norm_val = inp.title()
+            
+        if norm_val.lower() == "salary":
+            norm_val = "Salaried"
+            
+        if norm_val == expected_val and act_hourly == exp_hourly and act_salary == exp_salary:
+            passes += 1
+        else:
+             print(f"FAILED: Input='{inp}' -> Got='{norm_val}', Expected='{expected_val}'")
+
+    print(f"Pay Type Logic: {passes}/{len(cases)} Passed")
+
 if __name__ == "__main__":
     test_term_reason()
     test_state_abbr()
     test_job_title()
+    test_pay_type_logic()

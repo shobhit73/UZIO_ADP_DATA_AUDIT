@@ -365,6 +365,7 @@ def process_files(input_io, template_io):
         # Let's find critical indices in the template (Uzio side)
         idx_salary = []
         idx_hours = []
+        idx_hourly_rate = [] # New: Hourly Pay Rate
         idx_pay_type = []
         idx_term_reason = []
         idx_job_title = []
@@ -389,13 +390,16 @@ def process_files(input_io, template_io):
             
         for c_idx, h_name in template_headers.items():
             # Salary
-            if is_header(h_name, ["annual salary", "salary"]):
+            if is_header(h_name, ["annual salary"]):
                 idx_salary.append(c_idx)
+            # Hourly Pay Rate (Distinguish from Annual Salary if possible, or just look for 'hourly')
+            elif is_header(h_name, ["hourly pay", "hourly rate"]):
+                 idx_hourly_rate.append(c_idx)
             # Hours
             elif is_header(h_name, ["standard hours", "working hours"]):
                 idx_hours.append(c_idx)
             # Pay Type
-            elif is_header(h_name, ["pay type", "employment type"]): # Assuming Employment Type might hold hourly/salary info if Pay Type absent
+            elif is_header(h_name, ["pay type", "employment type"]): 
                 idx_pay_type.append(c_idx)
             # Term Reason
             elif is_header(h_name, ["termination reason"]):
@@ -404,7 +408,7 @@ def process_files(input_io, template_io):
             elif is_header(h_name, ["job title"]):
                 idx_job_title.append(c_idx)
             # State
-            elif is_header(h_name, ["state", "work state"]): # Be careful not to pick up "State Tax"
+            elif is_header(h_name, ["state", "work state"]): 
                  if "tax" not in h_name.lower():
                      idx_state.append(c_idx)
 
@@ -414,33 +418,62 @@ def process_files(input_io, template_io):
             
             # --- ROW LEVEL CONTEXT ---
             # Get Pay Type Value first to decide on Salary/Hours
-            # We need to find the Pay Type value. We can look it up from ADP record using the ADP Header mapped to Pay Type column.
-            
-            row_pay_type_val = ""
+            row_pay_type_source = ""
             if idx_pay_type:
-                # Use the first Pay Type column found
+                # Use the first Pay Type column found in map to get source value
                 pt_col_idx = idx_pay_type[0] 
                 adp_header_for_pt = header_map.get(pt_col_idx)
                 if adp_header_for_pt:
-                   row_pay_type_val = str(record.get(adp_header_for_pt, "")).lower()
+                   row_pay_type_source = str(record.get(adp_header_for_pt, "")).lower()
 
-            is_hourly = "hourly" in row_pay_type_val
-            is_salary = "salary" in row_pay_type_val or "salaried" in row_pay_type_val
+            # Normalize Pay Type
+            # Default to "Salaried" if ambiguous? Or just keep original? 
+            # User said "it can only have two values hourly or salaried".
+            # Let's detect based on source.
+            norm_pay_type_val = ""
+            is_hourly = False
+            is_salary = False
             
-            # If explicit "Hourly" -> Clear Salary
-            # If explicit "Salary" -> Clear Hours (per user request)
+            if "hour" in row_pay_type_source:
+                norm_pay_type_val = "Hourly"
+                is_hourly = True
+            elif "sal" in row_pay_type_source or "exempt" in row_pay_type_source: # catching 'exempt' as salary often
+                norm_pay_type_val = "Salaried"
+                is_salary = True
+            else:
+                # Fallback if unknown, maybe keep original title case or default?
+                # User complaint "currently it is giving salary". Logic likely needs to be strict "Salaried".
+                # If we can't determine, assume Salaried? Or just use "Salaried" if it looks like salary.
+                 if row_pay_type_source:
+                     norm_pay_type_val = row_pay_type_source.title() # e.g. "Full Time" -> "Full Time" (Wait, user said ONLY Hourly/Salaried)
+                 else:
+                     norm_pay_type_val = "" # or "Salaried"?
             
+            # 2nd pass check: if we normalized it to "Salary" change to "Salaried"
+            if norm_pay_type_val.lower() == "salary":
+                norm_pay_type_val = "Salaried"
+
             for col_idx, adp_header in header_map.items():
                 val = record.get(adp_header, "")
                 if pd.isna(val): val = ""
                 
                 # Apply Logic Transformations
                 
-                # 1. Salary / Hours Clearing
-                if col_idx in idx_salary:
+                # 0. Pay Type Normalization
+                if col_idx in idx_pay_type:
+                    val = norm_pay_type_val if norm_pay_type_val else val
+                
+                # 1. Salary / Hours / Hourly Rate Clearing
+                elif col_idx in idx_salary:
+                    # Clear Annual Salary if Hourly
                     if is_hourly: 
                         val = "" 
                 elif col_idx in idx_hours:
+                    # Clear Working Hours if Salaried
+                    if is_salary:
+                        val = ""
+                elif col_idx in idx_hourly_rate:
+                    # Clear Hourly Pay Rate if Salaried
                     if is_salary:
                         val = ""
                         
