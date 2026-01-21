@@ -551,7 +551,16 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
                     if is_employment_status_field(field) and adp_n != "":
                         adp_is_term_or_ret = status_contains_any(adp_n, ["terminated", "retired"])
-                        if adp_is_term_or_ret:
+                        
+                        # Special Case: UZIO Active == ADP Leave -> Match
+                        is_active_leave = (uzio_is_active(uz_n) and "leave" in adp_n)
+                        
+                        # Special Case: UZIO Terminated == ADP Deceased -> Match
+                        is_term_deceased = (uzio_is_terminated(uz_n) and "deceased" in adp_n)
+
+                        if is_active_leave or is_term_deceased:
+                            status = "Data Match"
+                        elif adp_is_term_or_ret:
                             if uz_n == "":
                                 status = "Value missing in Uzio (ADP has value)"
                             elif uzio_is_active(uz_n):
