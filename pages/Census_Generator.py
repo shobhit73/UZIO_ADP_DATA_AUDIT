@@ -317,10 +317,10 @@ def process_files(input_io, template_io):
         ws = wb[target_sheet_name]
         st.info(f"Targeting Template Sheet: {target_sheet_name}")
 
-        # 6. Identify Header Row
+        # 6. Identify Header Row & Build Column Maps
         # Heuristic: Find row with most matches to our Mapping Keys
         header_row_idx = None
-        header_map = {} # {ColumnIndex (1-based): TemplateHeaderName}
+        header_map = {} # {ColumnIndex (1-based): ADPHeaderName}
         
         max_matches = 0
         best_row = 1
@@ -341,13 +341,20 @@ def process_files(input_io, template_io):
             return None
             
         header_row_idx = best_row
-        # Build final column index map
+        
+        # Build FULL Template Header Map (Index -> Name) and Mapped Columns (Index -> ADP Header)
+        all_template_headers = {} # {ColIdx: HeaderName}
+        
         for cell in ws[header_row_idx]:
             val = str(cell.value).strip() if cell.value else ""
+            if not val: continue
+            
+            all_template_headers[cell.column] = val
+            
             if val in col_map:
                 header_map[cell.column] = col_map[val] # Map ColIndex -> ADPHeader
-        
-        st.info(f"Identified Header Row at {header_row_idx}. Mapped {len(header_map)} columns.")
+
+        st.info(f"Identified Header Row at {header_row_idx}. Mapped {len(header_map)} columns linked to ADP data.")
 
         # 7. Write Data
         # Start writing at header_row + 1
@@ -356,13 +363,8 @@ def process_files(input_io, template_io):
         # Convert ADP dataframe to list of dicts for easy access
         adp_records = adp_df.to_dict('records')
 
-        # --- NEW LOGIC: Identify Key Target Columns based on Uzio Headers ---
-        # We need to know which target column index corresponds to "Annual Salary", "Standard Hours", etc.
-        # header_map maps ColIndex -> ADPHeader. But we need to check the TemplateHeader first.
-        # We can reconstruct a reverse map from our col_map or scan header_map values.
-        # Efficient way: Scan header_map and matching Template Headers logic.
-        
-        # Let's find critical indices in the template (Uzio side)
+        # --- SPECIAL COLUMN IDENTIFICATION ---
+        # Look through ALL template headers to find special functional columns
         idx_salary = []
         idx_hours = []
         idx_hourly_rate = [] 
@@ -370,31 +372,20 @@ def process_files(input_io, template_io):
         idx_term_reason = []
         idx_job_title = []
         idx_state = []
-        idx_union = [] # New: Union
-        idx_flsa = [] # New: FLSA
+        idx_union = [] 
+        idx_flsa = []
+        idx_dates = [] # New: Date columns
         
-        # Helper to check header name against keywords
         def is_header(h_name, keywords):
             if not h_name: return False
             h = str(h_name).lower().strip()
             return any(k in h for k in keywords)
 
-        # Loop through header_map to identify functional columns
-        # header_map: {ColIdx: ADP_Col_Name} -> This links Template Col to ADP Data.
-        # But we need to know what the Template Column *conceptually* is.
-        # We have to look at the Template Header row again or use the Mapping Sheet relation.
-        
-        # Re-read Template Header Row to classify columns
-        template_headers = {} # {ColIdx: HeaderName}
-        for col_idx in header_map.keys():
-            cell_val = ws.cell(row=header_row_idx, column=col_idx).value
-            template_headers[col_idx] = str(cell_val).strip()
-            
-        for c_idx, h_name in template_headers.items():
+        for c_idx, h_name in all_template_headers.items():
             # Salary
             if is_header(h_name, ["annual salary"]):
                 idx_salary.append(c_idx)
-            # Hourly Pay Rate (Distinguish from Annual Salary if possible, or just look for 'hourly')
+            # Hourly Pay Rate
             elif is_header(h_name, ["hourly pay", "hourly rate"]):
                  idx_hourly_rate.append(c_idx)
             # Hours
@@ -419,17 +410,26 @@ def process_files(input_io, template_io):
             # FLSA
             elif is_header(h_name, ["flsa classification", "flsa"]):
                 idx_flsa.append(c_idx)
+            # Dates
+            elif is_header(h_name, ["date", "dob", "birth", "expire"]): 
+                idx_dates.append(c_idx)
 
+        # Merge all columns we need to write to: Mapped Columns + Special Static Columns
+        target_columns = set(header_map.keys())
+        target_columns.update(idx_union)
+        target_columns.update(idx_flsa)
+        
         processed_count = 0
         for i, record in enumerate(adp_records):
             current_row = start_row + i
             
             # --- ROW LEVEL CONTEXT ---
-            # Get Pay Type Value first to decide on Salary/Hours
+            # Get Pay Type Value first
             row_pay_type_source = ""
             if idx_pay_type:
-                # Use the first Pay Type column found in map to get source value
-                pt_col_idx = idx_pay_type[0] 
+                # Use the first Pay Type column found
+                pt_col_idx = idx_pay_type[0]
+                # Is this column mapped from ADP?
                 adp_header_for_pt = header_map.get(pt_col_idx)
                 if adp_header_for_pt:
                    row_pay_type_source = str(record.get(adp_header_for_pt, "")).lower()
@@ -454,26 +454,28 @@ def process_files(input_io, template_io):
             if norm_pay_type_val.lower() == "salary":
                 norm_pay_type_val = "Salaried"
 
-            for col_idx, adp_header in header_map.items():
-                val = record.get(adp_header, "")
-                if pd.isna(val): val = ""
-                
-                # Apply Logic Transformations
-                
+            # Iterate over all target columns
+            for col_idx in target_columns:
+                # Default value from ADP if mapped
+                adp_header = header_map.get(col_idx)
+                val = ""
+                if adp_header:
+                    val = record.get(adp_header, "")
+                    if pd.isna(val): val = ""
+
+                # --- APPLY TRANSFORMATIONS ---
+
                 # 0. Pay Type Normalization
                 if col_idx in idx_pay_type:
                     val = norm_pay_type_val if norm_pay_type_val else val
                 
                 # 1. Salary / Hours / Hourly Rate Clearing
                 elif col_idx in idx_salary:
-                    if is_hourly: 
-                        val = "" 
+                    if is_hourly: val = "" 
                 elif col_idx in idx_hours:
-                    if is_salary:
-                        val = ""
+                    if is_salary: val = ""
                 elif col_idx in idx_hourly_rate:
-                    if is_salary:
-                        val = ""
+                    if is_salary: val = ""
                         
                 # 2. Termination Reason
                 elif col_idx in idx_term_reason:
@@ -497,9 +499,17 @@ def process_files(input_io, template_io):
                         val = "Non-Exempt"
                     elif is_salary:
                         val = "Exempt"
-                    # Else keep original if we can't determine? Or default?
-                    # User said "always be Non-Exempt for hourly and Exempt for salaried".
-                    # If unknown, maybe leave it or default to Non-Exempt? Stick to explicit rules for now.
+                
+                # 7. Date Formatting
+                # Determine if we should attempt formatting
+                if col_idx in idx_dates:
+                     if val and str(val).strip():
+                         try:
+                             # Try to parse and format as YYYY-MM-DD
+                             dt = pd.to_datetime(val)
+                             val = dt.strftime("%Y-%m-%d")
+                         except:
+                             pass # Keep original if parse fails
 
                 ws.cell(row=current_row, column=col_idx, value=val)
             processed_count += 1

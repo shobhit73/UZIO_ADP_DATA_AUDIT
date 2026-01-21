@@ -155,9 +155,36 @@ def test_flsa_logic():
             
     print(f"FLSA Logic: {passes}/{len(cases)} Passed")
 
+
+def test_date_format():
+    print("\n--- Testing Date Formatting Logic (Stub) ---")
+    vals = [
+        ("2025-05-28 00:00:00", "2025-05-28"),
+        (pd.Timestamp("2025-05-28 00:00:00"), "2025-05-28"),
+        ("12/11/2025", "2025-12-11"),
+        ("Invalid", "Invalid") 
+    ]
+    
+    passes = 0
+    for inp, expected in vals:
+        res = inp
+        try:
+            dt = pd.to_datetime(inp)
+            res = dt.strftime("%Y-%m-%d")
+        except:
+            pass
+            
+        if str(res) == str(expected):
+            passes += 1
+        else:
+            print(f"FAILED: Input='{inp}' -> Got='{res}', Expected='{expected}'")
+            
+    print(f"Date Format: {passes}/{len(vals)} Passed")
+
 if __name__ == "__main__":
     test_term_reason()
     test_state_abbr()
     test_job_title()
     test_pay_type_logic()
     test_flsa_logic()
+    test_date_format()
