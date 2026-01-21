@@ -33,6 +33,84 @@ def norm_blank(x):
     val = str(x).strip()
     return val
 
+
+# ------------------ BUSINESS LOGIC ------------------
+
+JOB_TITLE_MAPPINGS = {
+    "admin": "administrator",
+    "management": "manager",
+    "dsp owner": "owner"
+}
+
+TERM_REASON_MAPPINGS = {
+    "no-show (never started employment)": "No-show (Never started employment)",
+    "personal": "Voluntary Termination of Employment",
+    "quit without notice": "Voluntary Termination of Employment",
+    "attendance": "Involuntary Termination of Employment",
+    "no reason given": "Involuntary Termination of Employment",
+    "performance": "Involuntary Termination of Employment",
+    "advancement (better job with higher pay)": "Voluntary Termination of Employment",
+    "misconduct": "Involuntary Termination of Employment",
+    "mutual agreement": "Voluntary Termination of Employment",
+    "abandoned job": "Involuntary Termination of Employment",
+    "deceased": "Death",
+    "retirement": "Retirement",
+    "permanent disability": "Permanent Disability",
+    "transfer": "Transfer",
+    # Mappings for lowercased inputs to standard output for direct hits
+    "involuntary termination of employment": "Involuntary Termination of Employment",
+    "voluntary termination of employment": "Voluntary Termination of Employment",
+    # Add other direct keys just in case
+    "death": "Death",
+    "other": "Other"
+}
+
+STATE_MAP = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH",
+    "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN",
+    "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "district of columbia": "DC"
+}
+
+def norm_job_title(x):
+    if not x: return ""
+    s = str(x).strip().replace("\u00A0", " ")
+    s = re.sub(r"\s+", " ", s).lower()
+    return JOB_TITLE_MAPPINGS.get(s, s)
+
+def get_mapped_term_reason(x):
+    if not x: return "Other"
+    s = str(x).strip().replace("\u00A0", " ")
+    if not s or s.lower() == "nan": return "Other"
+    
+    s_lower = re.sub(r"\s+", " ", s).lower()
+    
+    # Direct look up
+    if s_lower in TERM_REASON_MAPPINGS:
+        return TERM_REASON_MAPPINGS[s_lower]
+    
+    # If not found in explicit map, default to Other
+    return "Other"
+
+def get_state_abbr(x):
+    if not x: return ""
+    s = str(x).strip()
+    if not s or s.lower() == "nan": return ""
+    
+    if len(s) <= 2:
+        return s.upper()
+    
+    s_lower = s.lower()
+    return STATE_MAP.get(s_lower, s)
+
 # Copy of deduplication logic to keep this tool independent
 def deduplicate_adp(df: pd.DataFrame, key_col: str) -> pd.DataFrame:
     # Identify special columns (normalized)
@@ -277,13 +355,107 @@ def process_files(input_io, template_io):
         
         # Convert ADP dataframe to list of dicts for easy access
         adp_records = adp_df.to_dict('records')
+
+        # --- NEW LOGIC: Identify Key Target Columns based on Uzio Headers ---
+        # We need to know which target column index corresponds to "Annual Salary", "Standard Hours", etc.
+        # header_map maps ColIndex -> ADPHeader. But we need to check the TemplateHeader first.
+        # We can reconstruct a reverse map from our col_map or scan header_map values.
+        # Efficient way: Scan header_map and matching Template Headers logic.
         
+        # Let's find critical indices in the template (Uzio side)
+        idx_salary = []
+        idx_hours = []
+        idx_pay_type = []
+        idx_term_reason = []
+        idx_job_title = []
+        idx_state = []
+        
+        # Helper to check header name against keywords
+        def is_header(h_name, keywords):
+            if not h_name: return False
+            h = str(h_name).lower().strip()
+            return any(k in h for k in keywords)
+
+        # Loop through header_map to identify functional columns
+        # header_map: {ColIdx: ADP_Col_Name} -> This links Template Col to ADP Data.
+        # But we need to know what the Template Column *conceptually* is.
+        # We have to look at the Template Header row again or use the Mapping Sheet relation.
+        
+        # Re-read Template Header Row to classify columns
+        template_headers = {} # {ColIdx: HeaderName}
+        for col_idx in header_map.keys():
+            cell_val = ws.cell(row=header_row_idx, column=col_idx).value
+            template_headers[col_idx] = str(cell_val).strip()
+            
+        for c_idx, h_name in template_headers.items():
+            # Salary
+            if is_header(h_name, ["annual salary", "salary"]):
+                idx_salary.append(c_idx)
+            # Hours
+            elif is_header(h_name, ["standard hours", "working hours"]):
+                idx_hours.append(c_idx)
+            # Pay Type
+            elif is_header(h_name, ["pay type", "employment type"]): # Assuming Employment Type might hold hourly/salary info if Pay Type absent
+                idx_pay_type.append(c_idx)
+            # Term Reason
+            elif is_header(h_name, ["termination reason"]):
+                idx_term_reason.append(c_idx)
+            # Job Title
+            elif is_header(h_name, ["job title"]):
+                idx_job_title.append(c_idx)
+            # State
+            elif is_header(h_name, ["state", "work state"]): # Be careful not to pick up "State Tax"
+                 if "tax" not in h_name.lower():
+                     idx_state.append(c_idx)
+
         processed_count = 0
         for i, record in enumerate(adp_records):
             current_row = start_row + i
+            
+            # --- ROW LEVEL CONTEXT ---
+            # Get Pay Type Value first to decide on Salary/Hours
+            # We need to find the Pay Type value. We can look it up from ADP record using the ADP Header mapped to Pay Type column.
+            
+            row_pay_type_val = ""
+            if idx_pay_type:
+                # Use the first Pay Type column found
+                pt_col_idx = idx_pay_type[0] 
+                adp_header_for_pt = header_map.get(pt_col_idx)
+                if adp_header_for_pt:
+                   row_pay_type_val = str(record.get(adp_header_for_pt, "")).lower()
+
+            is_hourly = "hourly" in row_pay_type_val
+            is_salary = "salary" in row_pay_type_val or "salaried" in row_pay_type_val
+            
+            # If explicit "Hourly" -> Clear Salary
+            # If explicit "Salary" -> Clear Hours (per user request)
+            
             for col_idx, adp_header in header_map.items():
                 val = record.get(adp_header, "")
                 if pd.isna(val): val = ""
+                
+                # Apply Logic Transformations
+                
+                # 1. Salary / Hours Clearing
+                if col_idx in idx_salary:
+                    if is_hourly: 
+                        val = "" 
+                elif col_idx in idx_hours:
+                    if is_salary:
+                        val = ""
+                        
+                # 2. Termination Reason
+                elif col_idx in idx_term_reason:
+                    val = get_mapped_term_reason(val)
+                    
+                # 3. Job Title
+                elif col_idx in idx_job_title:
+                    val = norm_job_title(val)
+                    
+                # 4. State
+                elif col_idx in idx_state:
+                    val = get_state_abbr(val)
+
                 ws.cell(row=current_row, column=col_idx, value=val)
             processed_count += 1
             
