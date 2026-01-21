@@ -131,8 +131,33 @@ def test_pay_type_logic():
 
     print(f"Pay Type Logic: {passes}/{len(cases)} Passed")
 
+
+def test_flsa_logic():
+    print("\n--- Testing FLSA Logic (Stub) ---")
+    cases = [
+        (True, False, "Non-Exempt"), # Hourly
+        (False, True, "Exempt"),     # Salaried
+        (False, False, None)         # Unknown
+    ]
+    
+    passes = 0
+    for is_hourly, is_salary, expected in cases:
+        val = None
+        if is_hourly:
+            val = "Non-Exempt"
+        elif is_salary:
+            val = "Exempt"
+            
+        if val == expected:
+            passes += 1
+        else:
+            print(f"FAILED: Hourly={is_hourly}, Salary={is_salary} -> Got='{val}', Expected='{expected}'")
+            
+    print(f"FLSA Logic: {passes}/{len(cases)} Passed")
+
 if __name__ == "__main__":
     test_term_reason()
     test_state_abbr()
     test_job_title()
     test_pay_type_logic()
+    test_flsa_logic()

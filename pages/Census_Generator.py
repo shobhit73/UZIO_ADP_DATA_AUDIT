@@ -365,11 +365,13 @@ def process_files(input_io, template_io):
         # Let's find critical indices in the template (Uzio side)
         idx_salary = []
         idx_hours = []
-        idx_hourly_rate = [] # New: Hourly Pay Rate
+        idx_hourly_rate = [] 
         idx_pay_type = []
         idx_term_reason = []
         idx_job_title = []
         idx_state = []
+        idx_union = [] # New: Union
+        idx_flsa = [] # New: FLSA
         
         # Helper to check header name against keywords
         def is_header(h_name, keywords):
@@ -411,6 +413,12 @@ def process_files(input_io, template_io):
             elif is_header(h_name, ["state", "work state"]): 
                  if "tax" not in h_name.lower():
                      idx_state.append(c_idx)
+            # Union
+            elif is_header(h_name, ["union classification", "union"]):
+                idx_union.append(c_idx)
+            # FLSA
+            elif is_header(h_name, ["flsa classification", "flsa"]):
+                idx_flsa.append(c_idx)
 
         processed_count = 0
         for i, record in enumerate(adp_records):
@@ -427,9 +435,6 @@ def process_files(input_io, template_io):
                    row_pay_type_source = str(record.get(adp_header_for_pt, "")).lower()
 
             # Normalize Pay Type
-            # Default to "Salaried" if ambiguous? Or just keep original? 
-            # User said "it can only have two values hourly or salaried".
-            # Let's detect based on source.
             norm_pay_type_val = ""
             is_hourly = False
             is_salary = False
@@ -437,19 +442,15 @@ def process_files(input_io, template_io):
             if "hour" in row_pay_type_source:
                 norm_pay_type_val = "Hourly"
                 is_hourly = True
-            elif "sal" in row_pay_type_source or "exempt" in row_pay_type_source: # catching 'exempt' as salary often
+            elif "sal" in row_pay_type_source or "exempt" in row_pay_type_source:
                 norm_pay_type_val = "Salaried"
                 is_salary = True
             else:
-                # Fallback if unknown, maybe keep original title case or default?
-                # User complaint "currently it is giving salary". Logic likely needs to be strict "Salaried".
-                # If we can't determine, assume Salaried? Or just use "Salaried" if it looks like salary.
                  if row_pay_type_source:
-                     norm_pay_type_val = row_pay_type_source.title() # e.g. "Full Time" -> "Full Time" (Wait, user said ONLY Hourly/Salaried)
+                     norm_pay_type_val = row_pay_type_source.title()
                  else:
-                     norm_pay_type_val = "" # or "Salaried"?
+                     norm_pay_type_val = "" 
             
-            # 2nd pass check: if we normalized it to "Salary" change to "Salaried"
             if norm_pay_type_val.lower() == "salary":
                 norm_pay_type_val = "Salaried"
 
@@ -465,15 +466,12 @@ def process_files(input_io, template_io):
                 
                 # 1. Salary / Hours / Hourly Rate Clearing
                 elif col_idx in idx_salary:
-                    # Clear Annual Salary if Hourly
                     if is_hourly: 
                         val = "" 
                 elif col_idx in idx_hours:
-                    # Clear Working Hours if Salaried
                     if is_salary:
                         val = ""
                 elif col_idx in idx_hourly_rate:
-                    # Clear Hourly Pay Rate if Salaried
                     if is_salary:
                         val = ""
                         
@@ -488,6 +486,20 @@ def process_files(input_io, template_io):
                 # 4. State
                 elif col_idx in idx_state:
                     val = get_state_abbr(val)
+                
+                # 5. Union Classification (Always Non-Union)
+                elif col_idx in idx_union:
+                    val = "Non-Union"
+                    
+                # 6. FLSA Classification
+                elif col_idx in idx_flsa:
+                    if is_hourly:
+                        val = "Non-Exempt"
+                    elif is_salary:
+                        val = "Exempt"
+                    # Else keep original if we can't determine? Or default?
+                    # User said "always be Non-Exempt for hourly and Exempt for salaried".
+                    # If unknown, maybe leave it or default to Non-Exempt? Stick to explicit rules for now.
 
                 ws.cell(row=current_row, column=col_idx, value=val)
             processed_count += 1
