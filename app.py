@@ -120,6 +120,7 @@ GENDER_KEYWORDS = {"gender"}
 PHONE_KEYWORDS = {"phone"}
 MIDDLE_INITIAL_KEYWORDS = {"middle initial"}  # ONLY CHANGE: treat as initial vs full middle name
 JOB_TITLE_KEYWORDS = {"job title", "position title"}
+VETERAN_KEYWORDS = {"veteran"}
 
 JOB_TITLE_MAPPINGS = {
     "admin": "administrator",
@@ -156,6 +157,24 @@ def norm_job_title(x):
     s = re.sub(r"\s+", " ", s).strip().casefold()
     return JOB_TITLE_MAPPINGS.get(s, s)
 
+def norm_veteran_status(x):
+    x = norm_blank(x)
+    if x == "":
+        return ""
+    s = str(x).replace("\u00A0", " ")
+    s = re.sub(r"\s+", " ", s).strip().casefold()
+    
+    # Normalize phrases
+    # "i am not a protected veteran" -> "not a protected veteran"
+    if "not a protected veteran" in s:
+        return "not a protected veteran"
+    
+    # "identify as a protected veteran", "protected veteran" (without 'not') -> "protected veteran"
+    if "protected veteran" in s and "not" not in s:
+        return "protected veteran"
+        
+    return s
+
 def norm_value(x, field_name: str):
     f = norm_colname(field_name).lower()
     x = norm_blank(x)
@@ -167,6 +186,9 @@ def norm_value(x, field_name: str):
 
     if any(k in f for k in GENDER_KEYWORDS):
         return norm_gender(x)
+
+    if any(k in f for k in VETERAN_KEYWORDS):
+        return norm_veteran_status(x)
 
     if any(k in f for k in JOB_TITLE_KEYWORDS):
         return norm_job_title(x)
