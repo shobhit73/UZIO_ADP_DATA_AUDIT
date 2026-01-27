@@ -582,20 +582,28 @@ def run_comparison(file_bytes: bytes) -> bytes:
 
                         if is_active_leave or is_term_deceased:
                             status = "Data Match"
-                        elif adp_is_term_or_ret:
-                            if uz_n == "":
-                                status = "Value missing in Uzio (ADP has value)"
-                            elif uzio_is_active(uz_n):
-                                status = "Data Mismatch"
-                            elif uzio_is_terminated(uz_n):
-                                status = "Data Match"
-                            else:
-                                status = "Data Mismatch"
+                        elif (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
+                             status = "Data Match"
+                        elif uzio_is_terminated(uz_n) and adp_is_term_or_ret:
+                             # Both terminated/retired but strings diff -> Match
+                             status = "Data Match"
                         else:
-                            if (uz_n == adp_n) or (uz_n == "" and adp_n == ""):
-                                status = "Data Match"
+                            # MISMATCH / MISSING LOGIC per User Request
+                            # 1. Active in Uzio
+                            if uzio_is_active(uz_n):
+                                status = "Active in Uzio"
+                            # 2. Terminated in Uzio
+                            elif uzio_is_terminated(uz_n):
+                                status = "Terminated in Uzio"
+                            # 3. Active in ADP (Uzio Blank)
+                            elif uz_n == "" and not adp_is_term_or_ret:
+                                status = "Active in ADP"
+                            # 4. Terminated in ADP (Uzio Blank)
+                            elif uz_n == "" and adp_is_term_or_ret:
+                                status = "Terminated in ADP"
+                            # Fallback for other cases
                             elif uz_n == "" and adp_n != "":
-                                status = "Value missing in Uzio (ADP has value)"
+                                status = f"Value missing in Uzio (ADP: {adp_val})"  # Generic fallback
                             elif uz_n != "" and adp_n == "":
                                 status = "Value missing in ADP (Uzio has value)"
                             else:
